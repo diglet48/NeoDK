@@ -481,10 +481,15 @@ static bool kickOffBurst(BSP *me)
     return false;
 }
 
-
 static void onePulseDone(BSP *me)
 {
-    if (me->pulse_seqnr++ == pulse_timer->RCR) {
+    if (me->pulse_seqnr++ == pulse_timer->RCR) {    // last pulse in this burst
+        pulse_timer->CR1 &= ~TIM_CR1_CEN;           // Stop the counter.
+        pulse_timer->CNT = UINT16_MAX;              // ensure CNT > CCRx to disable outputs
+        pulse_timer->DIER &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
+        pulse_timer->SR &= ~(TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF);
+        LL_GPIO_ResetOutputPin(LED_GPIO_PORT, LED_1_PIN);
+        // BSP_logf("%s at %u µs\n", __func__, seq_clock->CNT);
         if (me->elcon_available) {
             BSP_setElectrodeConfiguration((uint8_t const *)me->next_burst.elcon);
             me->elcon_available = false;
@@ -561,17 +566,7 @@ void RCC_IRQHandler(void)
 
 void TIM1_BRK_UP_TRG_COM_IRQHandler(void)
 {
-    if (pulse_timer->SR & TIM_SR_UIF) {         // An update event.
-        pulse_timer->CR1 &= ~TIM_CR1_CEN;       // Stop the counter.
-        pulse_timer->DIER &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
-        pulse_timer->SR &= ~(TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF);
-        LL_GPIO_ResetOutputPin(LED_GPIO_PORT, LED_1_PIN);
-        // BSP_logf("%s at %u µs\n", __func__, seq_clock->CNT);
-        EventQueue_postEvent(bsp.delegate, ET_BURST_EXPIRED, NULL, 0);
-    } else {
-        BSP_logf("PT SR=0x%x\n", __func__, pulse_timer->SR);
-        // spuriousIRQ(&bsp);
-    }
+    pulse_timer->SR &= ~TIM_SR_UIF;
 }
 
 
@@ -945,9 +940,11 @@ bool BSP_scheduleBurst(Burst const *burst)
 
 bool BSP_startBurst(Burst const *burst)
 {
+    M_ASSERT(! (pulse_timer->CR1 & TIM_CR1_CEN));
+
     pulse_timer->ARR = burst->pace_µs - 1;
     pulse_timer->RCR = burst->nr_of_pulses - 1;
-    pulse_timer->CNT = 0;
+    pulse_timer->CNT = UINT16_MAX;
     pulse_timer->SR &= ~(TIM_SR_CC1IF | TIM_SR_CC2IF);
     uint8_t phase = Burst_phase(burst);
     if (phase == 0) {
