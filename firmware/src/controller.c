@@ -218,6 +218,10 @@ static void handleWriteRequest(Controller *me, AttributeAction const *aa)
                 BSP_logf("Setting heartbeat interval to %hu seconds\n", interval_secs);
                 me->heartbeat_interval_µs = interval_secs * 1000000UL;
             }
+        case AI_RESTIM:
+            if (aa->data[0] == EE_BYTES_1LEN) {
+                EventQueue_postEvent((EventQueue *)me->sequencer, ET_SET_RESTIM_PARAMETERS, aa->data + 2, aa->data[1]);
+            }
             break;
         default:
             BSP_logf("%s: unknown attribute id=%hu\n", __func__, aa->attribute_id);
@@ -242,6 +246,13 @@ static void handleInvokeRequest(Controller *me, AttributeAction const *aa)
                 EventQueue_postEvent((EventQueue *)me->sequencer, ET_START_STREAM, NULL, 0);
             } else if (aa->data[0] == EE_BOOLEAN_FALSE) {
                 EventQueue_postEvent((EventQueue *)me->sequencer, ET_STOP_STREAM, NULL, 0);
+            }
+            break;
+        case AI_RESTIM:
+            if (aa->data[0] == EE_BOOLEAN_TRUE) {
+                EventQueue_postEvent((EventQueue *)me->sequencer, ET_START_RESTIM, NULL, 0);
+            } else if (aa->data[0] == EE_BOOLEAN_FALSE) {
+                EventQueue_postEvent((EventQueue *)me->sequencer, ET_STOP_RESTIM, NULL, 0);
             }
             break;
         default:

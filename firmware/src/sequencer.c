@@ -19,6 +19,7 @@
 #include "attributes.h"
 #include "pattern_iter.h"
 #include "ptd_queue.h"
+#include "restim.h"
 
 // This module implements:
 #include "sequencer.h"
@@ -34,6 +35,7 @@ struct _Sequencer {
     StateFunc state;
     PatternDescr const *pattern;
     PatternIterator pi;
+    Restim restim;
     uint8_t intensity_percent;
     uint8_t play_state;
     uint8_t stream_busy;
@@ -110,9 +112,18 @@ static void queueDescriptor(Sequencer *me, PulseTrain const *pt, uint16_t sz)
     }
 }
 
+static void setRestimParameters(Sequencer *me, RestimPulseParameters const *params, uint16_t sz) {
+    if (sz != sizeof(RestimPulseParameters)) {
+        BSP_logf("Wrong payload size. Got %u expected %u\n", sz, sizeof(RestimPulseParameters));
+        return;
+    }
+    Restim_SetParameters(&me->restim, params);
+}
+
 // Forward declarations.
 static void *stateIdle(Sequencer *, AOEvent const *);
 static void *statePulsing(Sequencer *, AOEvent const *);
+static void *stateRestim(Sequencer *, AOEvent const *);
 
 
 static void *stateCanopy(Sequencer *me, AOEvent const *evt)
@@ -137,6 +148,9 @@ static void *stateCanopy(Sequencer *me, AOEvent const *evt)
             break;
         case ET_SET_INTENSITY:
             setIntensityPercentage(me, *AOEvent_data(evt));
+            break;
+        case ET_SET_RESTIM_PARAMETERS:
+            setRestimParameters(me, (RestimPulseParameters const*)AOEvent_data(evt), AOEvent_dataSize(evt));
             break;
         case ET_UNKNOWN_COMMAND:
             BSP_logf("Unknown command\n");
@@ -267,6 +281,11 @@ static void *stateIdle(Sequencer *me, AOEvent const *evt)
         case ET_STOP_STREAM:
             // Superfluous, ignore.
             break;
+        case ET_START_RESTIM:
+            return &stateRestim;             // Transition.
+        case ET_STOP_RESTIM:
+            // Superfluous, ignore.
+            break;
         case ET_BURST_EXPIRED:
             CLI_logf("Finished '%s'\n", PatternIterator_name(&me->pi));
             break;
@@ -352,6 +371,59 @@ static void *statePulsing(Sequencer *me, AOEvent const *evt)
     return NULL;
 }
 
+static void *stateRestim(Sequencer *me, AOEvent const *evt)
+{
+    static PatternDescr const restim_pd = { .name = "<restim>" };
+
+    switch (AOEvent_type(evt))
+    {
+        case ET_AO_ENTRY:
+            // me->pattern = &stream_pd;
+            me->pi.pattern_descr = &restim_pd;
+            BSP_logf("Sequencer_%s ENTRY\n", __func__);
+            setPlayState(me, PS_PLAYING);
+            Restim_ResetParameters(&me->restim); // prevent issues with stale parameters
+            me->stream_busy = Restim_ScheduleFirstBurst(&me->restim);
+            break;
+        case ET_AO_EXIT:
+            Restim_Stop(&me->restim);
+            BSP_logf("Sequencer_%s EXIT\n", __func__);
+            break;
+        case ET_START_STREAM:
+            // Superfluous, ignore.
+            break;
+        case ET_PLAY:
+            // if (me->play_state == PS_PAUSED) resumeStream(me);
+            break;
+        case ET_PAUSE:
+            // if (me->play_state == PS_PLAYING) pauseStream(me);
+            break;
+        case ET_TOGGLE_PLAY_PAUSE:
+            // if (me->play_state == PS_PAUSED) resumeStream(me);
+            // else if (me->play_state == PS_PLAYING) pauseStream(me);
+            break;
+        case ET_BAD_BURST:
+            Burst_print((Burst const*)AOEvent_data(evt));
+            // Fall through.
+        case ET_START_RESTIM:
+            // Superfluous, ignore.
+            break;
+        case ET_STOP_RESTIM:
+            return &stateIdle;                  // Transition.
+        case ET_BURST_STARTED:
+            me->stream_busy = Restim_ScheduleNextBurst(&me->restim);
+            break;
+        case ET_BURST_COMPLETED:
+            break;
+        case ET_BURST_EXPIRED:
+            if (me->stream_busy) break;
+            return &stateIdle;                  // No more descriptors, leave this state.
+        default:
+            return stateCanopy(me, evt);        // Forward the event.
+    }
+    return NULL;
+}
+
 // Send one event to the state machine.
 static void dispatchEvent(Sequencer *me, AOEvent const *evt)
 {
@@ -389,6 +461,7 @@ Sequencer *Sequencer_init(Sequencer *me)
     me->intensity_percent = 0;
     me->play_state = PS_UNKNOWN;
     BSP_registerPulseDelegate(&me->event_queue);
+    Restim_Init(&me->restim);
     return me;
 }
 
